@@ -148,7 +148,9 @@ Broker.prototype.sendMsg = function () {
             return function () {
                 //repeat sending by iterations while general ammount of iterations isn't reached
                 if (counterOfIterations < numberOfIterations) {
-                    sendingLoop (self.portionOfMsg/2); // portionOfMsg() return 2 messages
+                    //generator produces pair of messages(2) and return array of 2 elements ('start' and 'stop' messages)
+                    //portionOfMsg = n messages = n/2 pairs  
+                    sendingLoop (self.portionOfMsg/2); 
                     console.log (counterOfIterations + 1 + ') ' + self.portionOfMsg + ' messages have been sent');
                     
                     counterOfIterations++;
@@ -220,6 +222,10 @@ Broker.prototype.sendMsg = function () {
         });
       return;
     });
+    
+    connection.on ('error', function () { 
+        self.catchTheError ("No connection established. Connection was closed or wasn't presented...");
+    });
     //connection.on ('end', function () {console.log ('connection.on.end')});
 }
 
@@ -227,6 +233,6 @@ Broker.prototype.sendMsg = function () {
 
 exports.Broker = Broker;      
 
-var broc = new Broker(2, 2);
+//var broc = new Broker(2, 2);
 
-broc.sendMsg();
+//broc.sendMsg();

@@ -6,18 +6,18 @@ var amqp = require('../node_modules/amqp'); //rabbit mq
  */
 
 var Consumer = function () {
-    this.arrOfMsg = []; 
+    //this.arrOfMsg = []; 
     this.db  = require ('../src/CouchDb.js').CouchDb.getInstanceOfCouchDb();
 }
 
 
 /* Creates new doc from single message and adds it to Coach DB
+ * Calls setAcknowledge function if success 
  *
- * @param string routingKey, body object
+ * @param string routingKey, object body, callSetAcknowlegeFunc - callback
  *
- * return true if success
  */
-Consumer.prototype.createDocAndAddToCouch = function (routingKey, body) {
+Consumer.prototype.createDocAndAddToCouch = function (routingKey, body, callSetAcknowledgeFunc) {
     //create object for inserting
     var newDoc = {
         call_type: routingKey,
@@ -26,26 +26,30 @@ Consumer.prototype.createDocAndAddToCouch = function (routingKey, body) {
         created: gen.couchTimeStamp(),
         modified: gen.couchTimeStamp()
     }
-    //console.log (newDoc);
-    //console.log (this.db);
+    
+   /*This function is callback and called from CouchDb obj.
+    *
+    * @param isInsertSuccess = true if inserting is successful
+    * @param insertResultObj = obj returned from DB if insert is successful
+    */
+    function getInsertResult(isInsertSuccess, insertResultObj) {
+        if (isInsertSuccess) {
+            console.log("RoutingKey: '" + routingKey + "', call_id: '" + body.call_id + "'");
+            console.log (insertResultObj);
+            callSetAcknowledgeFunc();
+        }
+        else {
+            this.logTheError ('createDocAndAddToCouch(): Inserting fails ');
+        }
+    }
     
     //inserting
-    var insertResult = this.db.insert(newDoc);
-    setTimeout ( function () { console.log ('insertResult'); 
-                              console.log (insertResult);
-                             }, 0);
+    this.db.insert(newDoc, getInsertResult);
     
-    if (insertResult && insertResult.ok) {
-        return true;
-    }
-    else {
-        //this.logTheError ("Errors during couch insering. Message wasn't stored");
-        return false;
-    }
 }
 
-/* Listen and receive messages from queue
- * Call another method to process every message
+/* Listens and receives messages from queue
+ * Calls another method to process every message
  */
 
 Consumer.prototype.receiveAndProcessMsg = function () {
@@ -55,31 +59,32 @@ Consumer.prototype.receiveAndProcessMsg = function () {
                                            {reconnect: false}
                                            );
     conn.on ('ready', function () {
-        console.log('connection.on is ready');
+        console.log('Connection is ready for reading');
     
         conn.queue('test_stud_queue1', {autoDelete: false}, function(queue){
             queue.bind('test_stud', 'call.*');
-            console.log ('Start to reading...');
+            console.log ('Start to listen...');
             
-            // function receiveFromQueue() is callback for queue.subscribe
+            //function receiveFromQueue() is callback for queue.subscribe
+            //Declare function setAcknowlege() acknowledge
             var receiveFromQueue = function (message, headers, deliveryInfo, ack) {
-                try {
-                    console.log("Have got a message. RoutingKey: '" + deliveryInfo.routingKey + "' call_id: '" + message.playload.call_id + "'");
-                    //self.setArrOfMsg({
-                    //  routingKey:   deliveryInfo.routingKey,
-                    //  message: message.playload
-                    //});
+                
+                /* callback, set acknowledge for RabbitMQ
+                 * is called from this.createDocAndAddToCouch()
+                 */
+                function setAcknowlege () {
+                    ack.acknowledge();
+                    console.log ('Acknowledge has been set');
+                    console.log ('------------------------');
+                }
+                
+                console.log("Have got a message");
                     
-                    //call the function to process message
-                    self.createDocAndAddToCouch(deliveryInfo.routingKey, message.playload);
-                }
-                catch (e){
-                    console.log(e); 
-                }
+                //call the function to process message
+                self.createDocAndAddToCouch(deliveryInfo.routingKey, message.playload, setAcknowlege);
             }  
             
-            queue.subscribe(receiveFromQueue); 
-
+            queue.subscribe({ack: true}, receiveFromQueue); 
         });
     });
 }

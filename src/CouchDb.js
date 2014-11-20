@@ -8,11 +8,9 @@ var CouchDb = (function () {
         // Private methods and variables
         var nano   = require('nano')('http://10-60-8-119-couchdb.kwebbl.dev:5984');
         var db     = nano.use('a_studenyak');
-        var ResultArray = [];
         return {
 
             // Public methods and variables
-            insertingResultArray: ResultArray,
                 
             //---example
             publicMethodShowThis: function() {
@@ -21,16 +19,20 @@ var CouchDb = (function () {
             },
             
             
-            insert: function (doc) {
+            insert: function (doc, callback) {
+                var processResult = callback || null; 
                 //console.log (this.getDbRef());
                 db.insert(doc, {}, function(err, result) {
                     if (!err) {
                         //console.log (result);
-                        insertingResultArray.push(result);
-                        return result;    
+                        if (processResult) {
+                            processResult (true, result);
+                        }   
                     }
                     else {
-                        return err;
+                        if (processResult) {
+                            processResult (false, err);
+                        }  
                     }
                 });
             },
