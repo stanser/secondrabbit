@@ -5,115 +5,125 @@ var jas = require ('../node_modules/jasmine-node');
 //------------
 
 var BrokerObj = require('../src/Broker.js');
+var BrokerStaticPrivat = require('../src/Broker_static_privat');
 
 
 //Create a test object, an instance of Broker
 //var broker = new BrokerObj.Broker(100, 10);
-  
+
+var brokerOptions = {
+    total: 10,
+    once: 5,
+    startLess: 1,
+    negativeDuration: 1,
+    interval: 200
+}
+
+/** Creates an object with empty parameters
+*/
+
+function getEmptyOptionsObject () {
+    return {     
+        total: undefined,
+        once: undefined,
+        startLess: undefined,
+        negativeDuration: undefined,
+        interval: undefined
+    };
+};
+
 describe("Broker", function() {
-    beforeEach(function() {
-        broker = new BrokerObj.Broker();
-    });           
+
+    broker = new BrokerObj.Broker(brokerOptions);    
     
     it ("should be an Object", function () {
         expect(broker).toEqual(jasmine.any(Object));   
     });
     
-    it("should have defined countOfMsg and portionOfMsg (custom or default)", function() {
-        expect(broker.countOfMsg).toEqual(jasmine.any(Number));
-        expect(broker.portionOfMsg).toEqual(jasmine.any(Number));
+    it("should have defined countTotal and countAtOnce (custom or default)", 
+       function() {
+            expect(broker.countTotal).toEqual(jasmine.any(Number));
+            expect(broker.countAtOnce).toEqual(jasmine.any(Number));
     });
     
-    it("should have countOfMsg = 10 and portionOfMsg = 2 by default", function() {
-        var broker2 = new BrokerObj.Broker(); 
-        expect(broker2.countOfMsg).toBe(10);
-        expect(broker2.portionOfMsg).toBe(2);
+    it("() :should have countTotal = 12 and countAtOnce = 4 by default",
+       function() {
+            var broker2 = new BrokerObj.Broker(getEmptyOptionsObject()); 
+            expect(broker2.countTotal).toBe(12);
+            expect(broker2.countAtOnce).toBe(4);
     }); 
     
-    it("portionOfMsg becomes even number (decreased by 1). Broker(37, 13): countOfMsg=37, portionOfMsg=12, reminder=1", function() {
-        var broker3 = new BrokerObj.Broker(37, 13); 
-        expect(broker3.countOfMsg).toBe(37);
-        expect(broker3.portionOfMsg).toBe(12);
-        expect(broker3.reminder).toBe(1);
+    it("({10,5,1,1,200}): 10 will be increased by 2", function() {
+        expect(broker.countTotal).toBe(12);
     }); 
     
-    it("should have integer countOfMsg and portionOfMsg ", function() {
-        //var broker2 = new BrokerObj.Broker(99.5, 4.2);
-        expect(parseInt(broker.portionOfMsg)).toBe(broker.portionOfMsg);
-        expect(parseInt(broker.countOfMsg)).toBe(broker.countOfMsg);
-    });
-    
-    //deprecated
-    xit("should have arrOfMsg[] of 'countOfMsg' elements", function() {
-        var arr = [];
-        expect(broker.arrOfMsg).toEqual(jasmine.any(Object));
-    });
-    
-    
-        //deprecated
-        xit("checkTypeOfMsg() may be called with string args 'stop' or 'start'", function() {
-            spyOn(broker, 'checkTypeOfMsg');
-            broker.checkTypeOfMsg();
-            expect(broker.checkTypeOfMsg).toHaveBeenCalledWith(jasmine.any(String));
-        });
-
-        it("checkTypeOfMsg() may be called with 'start', 'stop' or () for both. Else -> catch an ERROR", function() {
-            spyOn(broker, 'catchTheError');
-            //If parameter is 'stop' or 'start' test will get a failure. 
-            //If else test will be passed because catchTheError() will be calles
-            broker.checkTypeOfMsg('sdf');
-            expect(broker.catchTheError).toHaveBeenCalled();
-        });
-
-        it("makeMsg() may be called with string args 'stop' or 'start'.  Else -> catch an ERROR", function() {
-            spyOn(broker, 'catchTheError');
-            //If parameter is 'stop' or 'start' test will get a failure. 
-            //If else test will be passed because catchTheError() will be calles
-            broker.makeMsg(13);
-            expect(broker.catchTheError).toHaveBeenCalled();
-        });
-    
-        it("makeMsg() should return an Array like ['<string>', {<object>}]", function() {
-            spyOn(broker, 'makeMsg').andCallThrough();
-            var f = broker.makeMsg('start');
-            expect(f).toEqual(jasmine.any(Object));
-            expect(f[1]).toEqual(jasmine.any(Object));
-            expect(f[0]).toEqual(jasmine.any(String));
-        });
-
-        it("makeMsg() should return correct Array", function() {
-            spyOn(broker, 'makeMsg').andCallThrough();
-            var msg = broker.makeMsg('start');
-            var obj = msg[1].playload;
-            var obj2 = {call_id:  'callId', timestamp: {}};
-           
-            expect(msg[0]).toBe('call.start');
-            for (var prop in obj2) {
-                expect(obj.hasOwnProperty(prop)).toBe(true);
+    it("({'foo',5,true,1,200}): should have integer countAtOnce and countTotal ",
+       function() {
+            var options = {
+                total: 'foo',
+                once: 5,
+                startLess: true,
+                negativeDuration: 1,
+                interval: 200
             }
-        });
-    
-        
-    
-
-});
-
-    
-    /*it('shows asynchronous test', function() {
-        setTimeout(function() {
-            expect('second').toEqual('second');
-            asyncSpecDone();
-        }, 1); 
-        expect('first').toEqual('first');
-        asyncSpecWait();
+            var broker3 = new BrokerObj.Broker(options);
+            expect(parseInt(broker3.countAtOnce)).toBe(broker3.countAtOnce);
+            expect(parseInt(broker3.countTotal)).toBe(broker3.countTotal);
     });
 
-    it('shows asynchronous test node-style', function(done) {
-        setTimeout(function() {
-            expect('second').toEqual('second');
-            // If you call done() with an argument, it will fail the spec
-            // so you can use it as a handler for many async node calls
-            done();
-        }, 1);
-        expect('first').toEqual('first');
-    });*/
+    it("If total ammount of calls is less than invalid calls ammount, catch error", 
+       function() {
+            var options = {
+                total: 10,
+                once: 5,
+                startLess: 15,
+                negativeDuration: 1,
+                interval: 200
+            }
+            spyOn(BrokerStaticPrivat, 'logTheError');
+            var broker2 = new BrokerObj.Broker(options);
+            expect(BrokerStaticPrivat.logTheError).toHaveBeenCalled();
+    });
+
+
+    it("setCall() should return an object {call.start: {playload: {...}}}", function() {
+        spyOn(broker, 'setCall').andCallThrough();
+        var f = broker.setCall('start');
+        expect(f).toEqual(jasmine.any(Object));
+        expect(f.hasOwnProperty('call.start')).toBe(true);
+        expect(f['call.start'].hasOwnProperty('playload')).toBe(true);
+    });
+
+    it("createInvalidCall() should return null if wrong parameter was passed", function() {
+        spyOn(broker, 'createInvalidCall').andCallThrough();
+        var f = broker.createInvalidCall('start');
+        expect(f).toBeNull();
+    });
+
+    it("causes an interval to be called synchronously", function() {
+        var timerCallback = jasmine.createSpy('timerCallback');
+        jasmine.Clock.useMock(); 
+        
+        var broker2 = new BrokerObj.Broker(getEmptyOptionsObject()); 
+        
+        broker2.sendMsg = function () {
+            function setSendingProcess () {
+                timerCallback();
+            }
+            setInterval(setSendingProcess, broker.interval);    
+        };
+        
+        broker2.sendMsg();
+        
+        expect(timerCallback).not.toHaveBeenCalled();
+
+        jasmine.Clock.tick((broker.interval + 1));
+        expect(timerCallback.callCount).toEqual(1);
+
+        jasmine.Clock.tick(broker.interval/2);
+        expect(timerCallback.callCount).toEqual(1);
+
+        jasmine.Clock.tick(broker.interval/2);
+        expect(timerCallback.callCount).toEqual(2);
+    });
+});

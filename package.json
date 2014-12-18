@@ -1,0 +1,33 @@
+{
+  "name": "Broker-mq",
+  "version": "0.1.0",
+  "description": "Messages generator for RabbirMQ",
+  "author": "Studenyak Anastasia <a.studenyak@kwebbl.com>",
+  "contributors": [
+      {
+        "name": "Studenyak Anastasia"
+      }
+  ],
+  "main": "index.js",
+  "repository": {
+      "type": "git",
+      "url": "https://a_studenyak@bitbucket.org/a_studenyak/rabbitmq.git"
+  },
+  "keywords": [
+      "rabbitmq",
+      "amqp"
+  ],
+  "dependencies": {
+      "amqp": "0.2.0",
+      "kwbl-gen": "0.1.0",
+      "util": "0.10.3",
+      "commander": "2.5.0",
+      "nano": "5.12.0"
+  },
+  "devDependencies": {
+      "jasmine-node": "1.14.5"
+  },
+  "bugs": {
+      "email": "<a.studenyak@kwebbl.com>"
+  }
+}

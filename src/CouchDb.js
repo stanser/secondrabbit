@@ -1,3 +1,4 @@
+var REngError = require('./error.js');
 var CouchDb = (function () {
  
     // Instance stores a reference to the Singleton CouchDb
@@ -6,87 +7,112 @@ var CouchDb = (function () {
     function initializeInstance() {
         // Singleton
         // Private methods and variables
-        var nano   = require('nano')('http://10-60-8-119-couchdb.kwebbl.dev:5984');
-        var db     = nano.use('a_studenyak');
-        return {
+        var nano = require('nano')('http://couchdb-ha.kwebbl.dev:5984');
+        var db = nano.use('test_a_studenyak');
+        
+        /** @methd _onSelect
+        * @privat
+        * @param {function} onSelectFinished - callback
+        *
+        * @returns {function} callback for select
+        */
+        function onSelect(onSelectFinished) {
+            /** @callback instanceOdCouchDb~_onSelect
+            * @param {object} error - if select failed
+            * @param {object} body - contains select result
+            * Prepaires parameters for external callback invocation and call last one  
+            */
+            return function(error, body) {
+                var result = {};
+                if (error) {
+                    onSelectFinished(new REngError(null, error), null);
+                    return;
+                }
+                if (body.rows.length === 1) {
+                    result = body.rows[0].doc;
+                    console.log("found startDoc call_id: " + result.call_id);
+                    onSelectFinished(null, result); 
+                    return;
+                }
 
-            // Public methods and variables
+                if (body.rows.length === 0) {
+                    result.call_id = undefined;
+                    optionsError = {code: 'ICID', 
+                                    invalid: 'call_id', 
+                                    description: 'call_id not found in database', 
+                                    location: 'CouchDb.selectStartDoc'};
+                    onSelectFinished(new REngError(optionsError), null);
+                } else {
+                    result = body.rows[0].doc;
+                    optionsError = {code: 'ICID', 
+                                    invalid: 'call_id', 
+                                    description: 'found multiple call_id ' + result.call_id, 
+                                    location: 'CouchDb.selectStartDoc',
+                                    notice: 'used one record only _id: ' + result._id};
+                    //console.log("found startDoc call_id: " + result.call_id);
+                    var error = new REngError(optionsError);
+                    error.log();
+                    onSelectFinished(null, result); 
+                }
                 
-            //---example
-            publicMethodShowThis: function() {
-                console.log( "I am publicMethod" );
-                console.log( this );
-            },
-            
-           /* Inserts into CouchDB
-            * Calls callback when finished
-            * @param doc - an object is needed to be inserted
-            * @param callback - function name
+            }
+        };
+        
+        return {
+            /** @method insert
+            * Inserts into CouchDB. Calls callback when finished
+            * @param {object} doc - an object is needed to be inserted
+            * @param {function} callback - function name
             *
-            * Returns <object> Error if is used without callback           
+            * @return {REngError} - error if is used without callback           
             */
-            insert: function (doc, callback) {
-                var processResult = callback || null; 
-                try {
-                    if (!processResult) throw new Error ("No callback for insert", "CouchDb.insert", 29);
-                    db.insert(doc, {}, function(err, result) {
-                        if (!err) {
-                            processResult (true, result);
-                        }
-                        else {
-                            processResult (false, err);
-                        }
-                    });
-                }
-                catch (e) {
-                    return e;
-                }
+            insert: function (doc, onInsertFinished) {
+                if (!onInsertFinished || typeof(onInsertFinished) !== 'function') 
+                    var optionsError = {code: 'CMISS', 
+                                        invalid: 'callback', 
+                                        description: 'callback missing or not a function', 
+                                        location: 'CouchDb.insert'};
+                    return new REngError(optionsError);
+                db.insert(doc, {}, function(error, result) {
+                    if (!error) {
+                        onInsertFinished (null, result);
+                    }
+                    else {
+                        onInsertFinished (new REngError(null, error), null);
+                    }
+                });
             },
             
-           /* Selects start doc by the call_id
-            * @param stopMsg - an object received from RabbitMQ
-            * @param callback - function name
+           /** @method selectStartDoc 
+            * Selects start doc by the call_id
+            * @param {string} searchingKey - key for searching doc
+            *    searchingKey ~ stopMsg.call_id
+            * @param {function} onSelectFinished - function name to process result
+            *
+            * Uses the first doc only even if another exist //TODO
             * 
-            * Returns <object> Error if is used without callback 
+            * @return {REngError} - error if is used without callback  
             */
-            selectStartDoc: function (stopMsg, callback) {
-                var processResult = callback || null;
+            selectStartDoc: function (searchingKey, onSelectFinished) { 
                 var design = "calls";
                 var view = "selectCallId";
-                var startMsg;
-                try {
-                    //if callback isn't defined return error
-                    if (!processResult) throw new Error ("No callback for select", "CouchDb.select", 62);
-
-                    console.log('call_id from stop message: ' + stopMsg.call_id);
-
-                    // body includes general info + rows with result
-                    db.view(design, view, {key: stopMsg.call_id, include_docs: true}, function(err, body) {
-                        if (!err) { 
-                            if (body.rows.length > 0) { 
-                              /*
-                               * use the first doc only even if another exists
-                               */
-                                startMsg = body.rows[0].doc;
-                                console.log("call_id from DB startDoc: " + startMsg.call_id);
-                                processResult (true, startMsg, stopMsg); //startMsg has found
-                                }
-                            else {
-                                //No rows selected
-                                startMsg = {call_id: 'not found'};
-                                processResult (false, startMsg, stopMsg); //no startMsg for existing stopMsg 
-                            }
-                        }
-                        else {
-                            //Error during selecting
-                            processResult (false, err, stopMsg); //error during selecting
-                        }
-                    });
+                var startMsg = {};
+                var errOptions;
+                
+                if (!onSelectFinished || typeof(onSelectFinished) !== 'function') {
+                    errOptions = {code: 'CMISS', 
+                                  invalid: 'callback', 
+                                  description: 'callback is missing or not a function', 
+                                  source: 'CouchDb.selectStartDoc'}
+                    return new REngError(errOptions);
                 }
-                catch (e) {
-                    return e;
-                }        
+                // body includes general info + rows with result
+                var options = {key: searchingKey, include_docs: true};
+                var onSelectCb = onSelect(onSelectFinished);
+                db.view(design, view, options, onSelectCb);
             },
+
+        
             
             //reference for db object
             getDbRef: function () {

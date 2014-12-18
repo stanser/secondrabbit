@@ -1,272 +1,355 @@
-var gen = require('../node_modules/kwbl-gen'); 
+/* TODO 
+* Refactoring
+* move repository to Kwebbl
+* treaded start
+* Broker: real starts and stops
+* Consumer-start: business logic 
+* Consumer-stop: selections, finance calculation, storage
+* Presension of errors, errors' handling
+* daemonization: forever js, monit script
+*/
 var amqp = require('../node_modules/amqp'); //rabbit mq
-var util = require('../node_modules/util');
+var config = require('../config');
+var ConsumerStatic = require('./Consumer_static'); 
+var REngError = require('./error.js');
 
-/* constructor for Consumer
- * @param type - which messages consumer works with: stop or start
- */
-
-var Consumer = function (type) {
-    //this.arrOfMsg = []; 
-    this.db  = require ('../src/CouchDb.js').CouchDb.getInstanceOfCouchDb();
-    this.typeOfAcceptedMsg = (type && (type == 'stop' || type == 'start')) ? type : 'both';
-    this.REQUEUEAMOUNT = 2; //how many times message may be put back onto the same queue
-    this.tryingToReadFromQueueAgain = false;
-}
-
-
-/* Creates new doc from single message and adds it to Coach DB
- * Calls setAcknowledge function if success 
- *
- * @param string routingKey, object bodyOfMsg, callSetAcknowlegeFunc - callback
- *
- */
-Consumer.prototype.createDocAndAddToCouch = function (routingKey, bodyOfMsg, callSetAcknowledgeFunc) {
-
-    var self = this;
-    var startDoc;
-    var resultOfQuery;
-    
-   /* This INSERT function is callback and called from CouchDb obj.
-    *
-    * @param isInsertSuccess = true if inserting is successful
-    * @param insertResultObj = <object> returned from DB if insert is successful or <object> Error otherwise
-    */
-    function getInsertResult(isInsertSuccess, insertResultObj) {
-        if (isInsertSuccess) {
-            console.log (insertResultObj);
-            callSetAcknowledgeFunc(true);
-        }
-        else {
-            self.logTheError (insertResultObj);// selectResultObj includes an Error object
-            callSetAcknowledgeFunc(false);
-        }
-    }
-    
-   /* This SELECT function is callback and called from CouchDb obj.
-    *
-    * @param isSelecttSuccess = true if selecting is successful
-    * @param selectResultObj = obj returned from DB if select is successful (newStartStopDoc)
-    * @stopMsg = obj regarded to selected newStartStopDoc (stopMsg and newStartStopDoc has the same call_id)
-    */
-    function getSelectResult(isSelectSuccess, selectResultObj, stopMsg) {
-        if (isSelectSuccess) {
-            //update doc with new fields
-            self.db.insert(createStartStopDoc(selectResultObj, stopMsg), getInsertResult);
-        }
-        else if (selectResultObj.hasOwnProperty('call_id')) {
-            var customError = { error: "NoDataFound",
-                            description: "No start doc found", 
-                            source: "Consumer.createDocAndAddToCouch.getSelectResult", //where error 
-                            invokedLineNumber: 64,
-                            mayBeSolved: ''}
-            self.logTheError (customError);
-            callSetAcknowledgeFunc(false);
-            }
-            else {
-                self.logTheError (selectResultObj);// selectResultObj includes an Error object
-            }
-    }
-    
-   /* Merges start doc with stop info from stop message
-    * Creates new doc (object) for DB updating
-    * Calculates call duration
-    *
-    * @param startDocObj - the doc from Couch with start msg information
-    * @param stopMsg - stop msg received from Rabbit
-    */
-    
-    function createStartStopDoc (startDocObj, stopMsg) {
-        var newStartStopDoc = startDocObj;
-            
-        var duration = stopMsg.timestamp.t - startDocObj.timestamp.t;
-        newStartStopDoc.start = startDocObj.timestamp;
-        newStartStopDoc.stop = stopMsg.timestamp;
-        
-        newStartStopDoc.call_type = 'call.start.stop';
-        newStartStopDoc.duration = duration;
-        newStartStopDoc.modified = gen.couchTimeStamp();    
-        
-        delete (newStartStopDoc.timestamp);
-        
-        return newStartStopDoc;
-     }
-    
-    //method's body begins...
-
-    if (!routingKey) {
-        getInsertResult (false, {});
+/** Listener for RabbitMQ queues. 
+* @class Consumer
+* @constructor
+* @param {string} type - which messages consumer works with: stop or start
+* @return {} nothing
+*
+* @property {string} typeOfAcceptedMsg - the same as param 'type'
+* @property {CouchDb} db - instance of database class
+* @property {integer} REQUEUEAMOUNT - how many times invalid message will be put back
+* @property {tryingToReadFromQueueAgain} - flag to define 
+*     invalid message is under trying to be read again
+* @property {amqp.connection} connection - connection with Rabbit MQ
+* @property {amqp.exchange} exchange 
+* @property {amqp.queue} queue - queue where messages are reading from
+* @property {integer} reSendCounter - counter for putting message back 
+*     onto the same queue
+*/
+var Consumer = function(type) {
+    if (type !== 'stop' && type !== 'start') {
+        var error = new REngError(null, 'Unknown type of messages');
+        error.log();
         return;
     }
+    this.typeOfAcceptedMsg = type;
+    this.db  = require('../src/CouchDb.js').CouchDb.getInstanceOfCouchDb();
+    this.REQUEUEAMOUNT = config.defaultConsumer.reQueueAmmount;
+    this.connection = null;
+    this.exchange = null;
+    this.queue = null;
+};
+
+/** @method receiveMessage
+* Listens and receives messages from queue 
+* @return {} nothing
+*/
+Consumer.prototype.receiveMessage = function() {
+    var self = this;
+    var routingKey = 'call.' + self.typeOfAcceptedMsg; 
+    var connection = amqp.createConnection(config.amqp.connection.options[0], 
+                                     config.amqp.connection.options[1]);
+    var queueName = config.amqp.queue.prefix + self.typeOfAcceptedMsg;
+    
+    connection.on ('ready', function () {
+        console.log('Connection is ready');
+        connection.queue(queueName, config.amqp.queue.options, function(queue) {
+            self.connection = connection;
+            self.queue = queue;
+            queue.bind(config.amqp.exchange.name, routingKey);
+            console.log('Start to listen...');
+            console.log('...');
+            var receiveFromQueue = self._receiveFromQueue();
+            queue.subscribe({ack: true}, receiveFromQueue); 
+        });
+    });
+};
+
+/** @method _receiveFromQueue 
+* @privat
+* @callback Consumer~requestCallback for queue.subscribe
+* @param {Consumer} consumer  - main instance
+*
+* @return {function} - closure with message's parameters
+*    param {object} message: {payload: {...}}
+* Invokes another method to process message has been received
+*/
+Consumer.prototype._receiveFromQueue = function () {
+    self = this;
+    return function(message, headers, deliveryInfo, ack) {
+        console.log("Received " + deliveryInfo.routingKey + " message");
+        console.log("call_id: " + message.payload.call_id);
+        self.processMsg(deliveryInfo.routingKey, message, ack);
+    }
+};
+
+/** @method processMsg
+* Handles messages: process insertation or selection with CoachDb methods 
+* Calls onCompletedProcess === setAcknowledge function when finished 
+*
+* @param {string} routingKey - type of messages are listened to
+* @param {object} bodyOfMsg - body of message
+* @param {object} ack - {object} ~ amqp.message.deliveryTag 
+*      used to set acknowledge after message has been processed 
+*
+* errorResult === new {Error} if db.method returns error 
+*/
+Consumer.prototype.processMsg = function(routingKey, message, ack) {
+    var self = this;
+    var startDoc;
+    var err;
+    var onResult;
     
     switch (routingKey) {
         case 'call.start': {
-            //create object for inserting
-            startDoc = {
-                call_type: routingKey,
-                call_id: bodyOfMsg.call_id,    
-                timestamp: bodyOfMsg.timestamp, 
-                created: gen.couchTimeStamp()
-            }
-            //inserting
-            resultOfQuery = self.db.insert(startDoc, getInsertResult);
-            if (resultOfQuery) self.logTheError (resultOfQuery);
+            startDoc = ConsumerStatic.getStartDoc(routingKey, message.payload);
+            onResult = self._onInsertResult(ack, routingKey, message); 
+            self.db.insert(startDoc, onResult);
             break;
         }
         case 'call.stop': {
-            /** select doc with the same call_id
-             * Should add closure to prevent context's lost */
-            function callSelectStartDoc () {            
-                resultOfQuery = self.db.selectStartDoc(bodyOfMsg, getSelectResult);
-                if (resultOfQuery) self.logTheError (resultOfQuery);
+            function callSelectStartDoc() {    
+                onResult =  self._onSelectResult(ack, routingKey, message);
+                self.db.selectStartDoc(message.payload.call_id, onResult);
             }
-            setTimeout(callSelectStartDoc, 500);
+            setTimeout(callSelectStartDoc, 400);
             break;
         }
-        /*case 'call.both':{
-            //console.log('case call.both');
-            self.logTheError('createDocAndAddToCouch(): type of message is not defined');
-            break;
-        }
+        case 'rejected.call.stop':
+        case 'rejected.call.start': 
         default: {
-            self.logTheError('createDocAndAddToCouch(): type of message is incorrect or not defined');
+            var errorOptions = {code: 'IRTKY', 
+                                invalid: 'routingKey', 
+                                description: 'incorrect routing key specified', 
+                                location: 'Consumer.processMsg'};
+            var error = new REngError(errorOptions);
+            error.log();
             break;
-        }*/
+        }
     }
-    //return;
-}
+};
 
-/* Listens and receives messages from queue
- * Calls another method to process every message
- * 
- */
+/** @method _setAcknowledge
+* @privat
+* 
+* @param {object} ack - {object} ~ amqp.message.deliveryTag 
+* @return {} nothing
+*/
+Consumer.prototype._setAcknowledge = function(ack) {
+    ack.acknowledge();
+    ConsumerStatic.logSubsidairyInfo('ack');
+};
 
-Consumer.prototype.receiveAndProcessMsg = function () {
+/** @method onPublish
+* Provides closure with parameters 
+* 
+* @param {string} key - routingKey of message has been published
+* @param {object} val - matching body of message
+*
+* @return {function} - error handler
+*/
+Consumer.prototype._onPublish = function(key, val, ack) {
+    /** @callback ConsumerStatic~onPublish
+    * This is callback for exchange.publish (if exchange is in confirm mode)
+    * 
+    * @param {boolean} isErrorOccured is the presense of an error. 
+    * true means an error occured
+    * false means the publish was successfull
+    * @return {} nothing
+    */
     var self = this;
-    var reSendToQueueCounter = 0;
+    return function(isErrorOccured) {
+        if (!isErrorOccured) {
+            self._setAcknowledge(ack);
+            return;
+        }
+        var strNotice = util.format('routingKey = %s, body = %s', 
+                                     key, JSON.stringify(val));
+        var optionsError = {code: 'MSNPUB', 
+                            invalid: 'publish', 
+                            description: 'message was not sent to queue', 
+                            source: 'Consumer._onPublish',
+                            notice: strNotice};
+        var error = new REngError(optionsError);
+        error.log();
+    }
+},
 
-    /** if correct type wasn't defined.... */
-    if (self.typeOfAcceptedMsg == 'both') {
-        self.logTheError( { error: "TypeError",
-                            description: "Type of accepted messages is not defined", 
-                            source: "Consumer.receiveAndProcessMsg", //where error 
-                            invokedLineNumber: 141,
-                            mayBeSolved: 'Consumer.constructor'});
+/**
+*
+* @param {string} routingKey - type of messages are listened to
+* @param {object} bodyOfMsg - body of message
+* @param {object} ack - {object} ~ amqp.message.deliveryTag 
+*/
+Consumer.prototype._processReQueue = function(ack, routingKey, message) {
+    //TODO do not erase
+    /*var attemptIndex = message.payload.retry.length;
+    if (message.payload.retry[attemptIndex].attempt.counter < self.REQUEUEAMOUNT) {
+        self.queue.shift(true, true);
         return;
-    }
+    } */
+    var self = this;
+    var attemptAmmount = message.payload.retry.length;
         
-    var msgType = 'call.' + self.typeOfAcceptedMsg; 
-    var conn = amqp.createConnection({host: '10-60-8-149-pure.kwebbl.dev'},
-                                       {reconnect: false}
-                                       );
-    var queueName = 'test_stud_queue_' + self.typeOfAcceptedMsg;
-    conn.on ('ready', function () {
-        console.log('Connection is ready for reading');
-            conn.queue( queueName, {autoDelete: false}, function(queue){
-                try {
-                    queue.bind('test_stud', msgType);
-                    console.log ('Start to listen...');
-                    queue.subscribe({ack: true}, receiveFromQueue); 
-
-                    //receiveFromQueue() is callback for queue.subscribe
-                    var receiveFromQueue = function (message, headers, deliveryInfo, ack) {
-
-                        /** Function definition setAcknowlege ()
-                         * Callback, sets acknowledge for RabbitMQ
-                         * Is called from this.createDocAndAddToCouch()
-                         *
-                         * @param isProcessMsgSuccess - bool, defines if acknowledge should be sent to Rabbit
-                         */
-                        function setAcknowlege (isProcessMsgSuccess) {
-                            if (isProcessMsgSuccess ) { /** if processing of message was successful */
-                                ack.acknowledge();
-                                console.log ('Acknowledge has been set');
-                                console.log ('------------------------');
-                            }
-                            else { /** else: try to resend to the same queue some times*/
-                                if (reSendToQueueCounter < self.REQUEUEAMOUNT) {
-                                    queue.shift(true, true);
-                                    reSendToQueueCounter++;
-                                    console.log ('Message was put back onto queue');
-                                    console.log ('------------------------');
-                                    self.tryingToReadFromQueueAgain = true; /** is true when msg is putting back*/
-                                }
-                                else { /** then send rejected message to another queue */
-                                    console.log ('Message has been rejected. Will send to another queue');
-                                    self.tryingToReadFromQueueAgain = false; /** is false when msg is sending to another queue*/
-                                    processReQueue();
-                                }
-                            }
-                        }
-                        
-                        /**  Function definition processReQueue().
-                        * Moves rejected message onto special queue "test_stud_queue_rejected"
-                        * New routin key looks like "rejected.call.*" where * = stop||start 
-                        */
-                        
-                        function processReQueue() {
-                            conn.exchange('test_stud', {autoDelete: false}, function(exchange) { 
-                                conn.queue('test_stud_queue_rejected', {autoDelete: false}, function(queue){   
-                                    var rejectedMsgType = 'rejected.'+ deliveryInfo.routingKey;
-                                    queue.bind('test_stud', 'rejected.call.*');
-                                    
-                                    console.log('rejectedMsgType: ' + rejectedMsgType );
-                                    exchange.publish(rejectedMsgType, message);
-                                    
-                                    setAcknowlege(true);
-                                });
-                            });
-                        }
-                        console.log("Have got a " + msgType + " message:");
-                        console.log(message);
-                        
-                        //call the function to process message                
-                        self.createDocAndAddToCouch(msgType, message.playload, setAcknowlege);
-                    }  
-                }
-                catch (e) {
-                    self.logTheError (e);
-                }
-            });
-        });
-}
-
-/*
-*
-*
-*
-*/
-Consumer.prototype.validateCallProperties = function (doc){
-    var issuesOfCall = [];
+    //console.log('_processReQueue routingKey: %s', routingKey);
+    //console.log('_attemptAmmount', attemptAmmount);
     
-   { call_type: '',
-   call_id: '',
-   created: { t: 0 },
-   start: { t: 0 },
-   stop:  { t: 0 },
-   duration: 0
-   }
-    if (!doc.hasOwnProperty('call_type')) {
-        issuesOfCall.push
+    if (attemptAmmount === 1) {
+        routingKey = 'retry.' + routingKey; 
+        self._sendToRetry(ack, routingKey, message);
+    } else if (attemptAmmount < self.REQUEUEAMOUNT) {
+        self._resendToRetry(ack, routingKey, message);
+    } else {
+        var checkPrefix = routingKey.search('retry');
+        if (checkPrefix < 0) {
+            routingKey = 'retry.' + routingKey;
+        }
+        routingKey = routingKey.replace('retry', 'rejected');
+        self._sendToRejected(ack, routingKey, message); 
     }
 }
-
-/* 
-* Logs the error
-*
-*/
-Consumer.prototype.logTheError = function(value) {
-    if (this.tryingToReadFromQueueAgain) return; /** don't log error if putting back onto queue repeats */
     
-    if (util.isError(value)) {
-        console.log(util.inspect (value)) ;
-    }
-    else { /** custom error*/
-        console.log('ERROR: ' + value.description);
-        console.log('Was invoked in ' + value.source + ' :: ' + value.invokedLineNumber);
-        if (value.mayBeSolved) console.log('Ma be solved in ' + value.mayBeSolved);
-    }
-    return;
+Consumer.prototype._sendToRetry = function (ack, routingKey, message) {
+    var self = this;
+    var exchangeName = config.amqp.exchange.name;
+    var exchangeOptions = config.amqp.exchange.options;
+    var queuePrefix = config.amqp.queue.prefix;
+    var queueOptions = config.amqp.queue.options;
+    var connection = self.connection;
+    
+    connection.exchange(exchangeName, exchangeOptions, function(exchange) { 
+        //TODO error handling if requeued msg publishing failed
+        var onPublish = self._onPublish(routingKey, message, ack);
+        exchange.publish(routingKey, 
+                         message, 
+                         {},
+                         onPublish);
+    });
+
+    connection.queue(queuePrefix + 'retry', queueOptions, function(queue) {   
+        queue.bind(exchangeName, 'retry.call.*');
+    });
+}
+//TODO implement functionalitys
+Consumer.prototype._resendToRetry = function (ack, routingKey, message) {
+    var self = this;
+    var attemptIndex = message.payload.retry.length - 1;
+    ConsumerStatic.addRetryAttempt(message, message.payload.retry[attemptIndex]);
+    self._sendToRetry(ack, routingKey, message);
+    ConsumerStatic.logSubsidairyInfo('back_queue');
+    
+    //self.connection.queue(queueName, queueOptions, function(queue) {   
+        //queue.shift(true, true); can't use because message was changed
+    //}); 
 }
 
-exports.Consumer = Consumer;   
+/** @method _sendToRejected
+* @privat 
+* @param {string} routingKey
+* @param {object} message: object like {payload: {...}} 
+* @param {object} ack - object used to set acknowledge
+* @return {} nothing
+*
+* Moves rejected message onto special queue 
+* New routingKey looks like "rejected.call.*" where * = stop|start 
+*/
+Consumer.prototype._sendToRejected = function(ack, routingKey, message) {
+    var self = this;
+    var exchangeName = config.amqp.exchange.name;
+    var exchangeOptions = config.amqp.exchange.options;
+    var queuePrefix = config.amqp.queue.prefix;
+    var queueOptions = config.amqp.queue.options;
+    var connection = self.connection;
+    
+    console.log ('_sendToRejected');
+    connection.exchange(exchangeName, exchangeOptions, function(exchange) { 
+        //TODO error handling if requeued msg publishing failed
+        var onPublish = self._onPublish(routingKey, message, ack);
+        exchange.publish(routingKey, 
+                         message, 
+                         {}, 
+                         onPublish);
+    });
+    
+    connection.queue(queuePrefix + 'rejected', queueOptions, function(queue) {   
+        queue.bind(exchangeName, 'rejected.call.*');
+    });
+};
+
+/** @method _onInsertResult - closes parameters for callback
+* @privat
+* 
+* @param {object} ack - object used to set acknowledge
+* @param {string} routingKey
+* @param {object} message: object like {payload: {...}} 
+*
+* @returns {function} - callback 
+*/
+Consumer.prototype._onInsertResult = function(ack, routingKey, message) {
+    /** @callback Consumer~_onInsertResult
+    * Processes the result of insertation, used for CouchDb instance 
+    * @param {object} insertResult - result of insert (if success) or null otherwise
+    * @param {object} insertError - null (if success) or error object
+    * @return {} nothing
+    */
+    self = this;
+    return function(insertError, insertResult) {
+        if (insertResult) {
+            console.log(insertResult);
+            self._setAcknowledge(ack);
+        } else {
+            //ConsumerStatic.logTheError(insertError);
+            ConsumerStatic.addRetryAttempt(message, insertError);
+            self._processReQueue(ack, routingKey, message);
+        }
+    }
+};
+
+/** @method _onSelectResult 
+* @param {object} ack - object used to set acknowledge
+* @param {string} routingKey
+* @param {object} message: object like {payload: {...}} 
+*
+* @returns {function} - callback 
+*/
+Consumer.prototype._onSelectResult = function(ack, routingKey, message) {
+    /** @callback Consumer~_onSelectResult 
+    * Processes the result of selection, used for CouchDb instance
+    * @param {object} selectError - new Error if selecting was failed
+    * @param {object} selectResult - result of selection (if success) or null otherwise
+    *        if no data found: selectResult === {call_id: ''} (empty string)
+    * Processes validation to specify invalid parameters of messages. 
+    * Later these invalid messages will be put onto another queue (rejected)
+    */
+    var self = this;
+    return function(selectError, selectResult) {
+        var validation;
+        //no start message
+        if (selectError) {
+            //ConsumerStatic.logTheError(err);
+            selectError.log();
+            ConsumerStatic.addRetryAttempt(message, selectError);
+            ConsumerStatic.logSubsidairyInfo('re_queue');
+            self._processReQueue(ack, routingKey, message);
+            return;
+        }
+
+        validation = ConsumerStatic.checkTimestamp(selectResult, message.payload); 
+
+        if (validation) {
+            ConsumerStatic.addRetryAttempt(message, validation);
+            ConsumerStatic.logSubsidairyInfo('re_queue');
+            self._processReQueue(ack, routingKey, message, validation);
+        } else {
+            var docCall = ConsumerStatic.createStartStopDoc(selectResult, message.payload);
+            var onResult = self._onInsertResult(ack, routingKey, message);
+            self.db.insert(docCall, onResult);
+        }
+    }
+};
+
+exports.Consumer = Consumer;
